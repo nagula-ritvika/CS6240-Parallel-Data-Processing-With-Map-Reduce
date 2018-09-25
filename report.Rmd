@@ -1,0 +1,223 @@
+---
+title: "Project Report"
+author: "Futai-Ritvika-Shikha"
+date: "December 7, 2017"
+output:
+  pdf_document: default
+  html_document: default
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(ggplot2)
+library(reshape2)
+library(corrplot)
+library(gridExtra)
+```
+
+
+####<span style = "color:#5cc5ce">Objective</span>
+Given a dataset of songs, we have to predict the number of downloads for a given song using a machine learning algorithm.
+
+####Dataset
+The dataset provided to us is from https://labrosa.ee.columbia.edu/millionsong/
+The Million Songs dataset is of `1.6gb` (compressed version). 
+ThisIsMyJam: We are also given `1026211` records of users posting their current favourite song (Jam).
+TasteProfile: This dataset represents the number of times the user played a particular song.
+
+
+####<span style = "color:#5cc5ce">System specifications</span> 
+We run all the tasks on our local machine. The specifications of the machine are:
+```
+Processor 2.9 GHz Intel Core i5
+Memory 8 GB 1867 MHz DDR3
+Scala SDK version: 2.11.8
+Spark Version: 2.11_2.2.0
+```
+
+```{r echo=FALSE}
+corpus <- read.csv("bigfile.csv", sep = ',', header = FALSE)
+
+colnames(corpus) <- c("track_id", "song_id", "downloads", "mean_price", "fade_in", "fade_out", "duration", "loudness", "tempo", "key", "key_confidence", "mode","mode_confidence", "time_signature", "time_signature_confidence", "artist_familiarity", "artist_hotness", "song_hotness", "year", "number_jam", "number_play")
+
+```
+
+####<span style = "color:#5cc5ce">Implementation and Design</span> 
+
+We have implemented the model in Scala using Spark. The main steps followed in our approach of this implementation are described as follows.
+
+#####<span style = "color:#3e7eb2">1. Data Collection</span>
+<div style="text-align: justify">
+From the downloaded data sets, we are using the `downloads.csv`, `songs_info.csv`, `train_triplets.csv`, `similar_artists` and `jam_to_msd.csv` to build our model and get the final prediction for the required songs. 
+After exploring each data set and finding out what features the files have, we decided to create a package called `type` to customize the data type for further parsing our files. For example, for the SongInfo.scala, the feature are assigned the respective data type before being converted them a `DataFrame`.
+
+#####<span style = "color:#3e7eb2">2. Data Processing</span>
+<div style="text-align: justify">
+This step includes the following:
+
+In the `ParseFile.scala`, for the function of `getFileDataSemiColon()` and `getFileDataSpace()`, we map files into rdd and split every line based on “;” or space. For the function of `getSongData()`, we obtain the certain features we want while replacing missing values as average of that column or zero depend on what we need for the features. For other functions, it is the same idea as this function, but tailored to respective file.
+In the `ParseDownloads.scala`, we filter out those records that have wrong artist name or records that don’t have any artist name.
+In the `ParseJam` and `ParseTaste` files, we aggregate the sum of number of Jam and Plays for each song, thus converting existing features to new features which will assist us in training the model better. And we also look at how many times a song has been played by a particular user using `train_triplet.csv`. 
+All the features are of `double` type. Replace outliers(or possible invalid values) and missing values of a field with either 0s, or the mean of the actually existing values for that field is a crucial step.
+
+After doing all this, we ended up with `652148` records.
+
+#####<span style = "color:#3e7eb2">3. Correlation Analysis and Feature Selection</span>
+<div style="text-align: justify">
+
+#######CORRELATION:
+We calculate the correlation values to gather a mutual relationship or connection between two or more fields. We also calculate the correlation value for the all the features with respect to the downloads field.
+
+<div style= "float:right;position: relative; top: -80px;">
+
+```{r fig.width=9, fig.height=5, fig.align='left', echo=FALSE}
+features <- c('downloads','mean_price', 'loudness','tempo','key', 'key_confidence', 'number_play','song_hotness','duration', 'artist_hotness','number_jam','artist_familiarity','fade_in','fade_out','mode','mode_confidence','time_signature','time_signature_confidence','year')
+#sort(features,decreasing = FALSE)
+x <- ""
+y <- ""
+cors = c()
+for(x in features){
+  for(y in features){
+  cors <- c(cors,cor(corpus[[x]],corpus[[y]]))
+  }
+}
+cors_mat = matrix(cors,nrow = 19,ncol = 19)
+
+row.names(cors_mat) <- features
+colnames(cors_mat) <- features
+
+
+cor_plot <- corrplot(cors_mat, type = "upper", order = "FPC", 
+         method = "square", 
+         col = colorRampPalette(c("red","yellow","#007f43","#65e6f2","#d82bc4", "blue","grey","black"))(30),
+         tl.col = "black", tl.srt = 45
+         #, tl.pos = "d"
+         )
+
+```
+
+</div>
+
+#######FEATURE SELECTION:
+Since we had multiple number of features to train our model, we selected the features both manually after performing a series of experiments, where we used different combinations of sets of features to train the model. The graph below shows how some of the features are related to the downloads. There appears to be a direct relationship between the features and the `downloads`.
+We observed that the rmse of the model on using only the top 5 features that have highest correlation gave us a mean rmse of `~83`, while using the top 7 features gave us a mean rmse of `~80`. But with all the fields as features, we obtained a mean rmse of `~75`. 
+After many experiments, we came to the conclusion that using the set of all available features results in the lowest `rmse`. Thus, we use all the `18` features as the features for training of the model. We use the entire data we obtained after processing as the training data.
+
+```{r echo=FALSE, fig.width=9}
+price.plot <- ggplot(corpus, aes(x=corpus$mean_price,
+                                  y=corpus$downloads)) +
+  geom_point(color='#66CC99') + 
+  labs(title="", x='Mean Price',y='Downloads')+
+  theme_bw() + 
+  theme(plot.title = element_text(face = "bold", hjust = 0.5), 
+        legend.position="none",
+        axis.title.x = element_text(margin = margin(t=10)))
+
+artist_hotness.plot <- ggplot(corpus, aes(x=corpus$artist_hotness,
+                                  y=corpus$downloads)) +
+  geom_point(color='#66CC99') + 
+  labs(title="", x='Artist Hotness',y='')+
+  theme_bw() + 
+  theme(plot.title = element_text(face = "bold", hjust = 0.5), 
+        legend.position="none",
+        axis.title.x = element_text(margin = margin(t=10)))
+
+artist_fam.plot <- ggplot(corpus, aes(x=corpus$artist_familiarity,
+                                  y=corpus$downloads)) +
+  geom_point(color='#66CC99') + 
+  labs(title="", x='Artist Familiarity',y='')+
+  theme_bw() + 
+  theme(plot.title = element_text(face = "bold", hjust = 0.5), 
+        legend.position="none",
+        axis.title.x = element_text(margin = margin(t=10)))
+
+song_hot.plot <- ggplot(corpus, aes(x=corpus$song_hotness,
+                                  y=corpus$downloads)) +
+  geom_point(color='#66CC99') + 
+  labs(title="", x='Song Hotness',y='Downloads')+
+  theme_bw() + 
+  theme(plot.title = element_text(face = "bold", hjust = 0.5), 
+        legend.position="none",
+        axis.title.x = element_text(margin = margin(t=10)))
+
+jam.plot <- ggplot(corpus, aes(x=corpus$number_jam,
+                                  y=corpus$downloads)) +
+  geom_point(color='#66CC99') + 
+  labs(title="", x='Number of Jams',y='')+
+  theme_bw() + 
+  theme(plot.title = element_text(face = "bold", hjust = 0.5), 
+        legend.position="none",
+        axis.title.x = element_text(margin = margin(t=10)))
+
+play.plot <- ggplot(corpus, aes(x=corpus$number_play,
+                                  y=corpus$downloads)) +
+  geom_point(color='#66CC99') + 
+  labs(title="", x='Number of Play',y='')+
+  theme_bw() + 
+  theme(plot.title = element_text(face = "bold", hjust = 0.5), 
+        legend.position="none",
+        axis.title.x = element_text(margin = margin(t=10)))
+
+grid.arrange(price.plot, artist_hotness.plot, artist_fam.plot, song_hot.plot, jam.plot, play.plot, ncol=3, nrow=2)
+```
+
+
+#####<span style = "color:#3e7eb2">4. Model Evaluation and Results</span>
+<div style="text-align: justify">
+
+We decided to compare the performances of two different machine learning techniques i.e LinearRegression and RandomForest for the given data to choose a model that fits better.
+We randomly select 20% of the data as test data and the remaining 80% as training data. We do this for 50 iterations, each time selecting random sets as training and testing data. We then find the root mean squared error of the model for each iteration as can be seen from the graphs below.
+
+```{r fig.width=9, echo=FALSE}
+rmses_lr <- read.csv("rmses_lr.csv", header = FALSE)
+colnames(rmses_lr) <- c('Run','RMSE')
+rmses_rf <- read.csv("rmses_rf.csv", header = FALSE)
+colnames(rmses_rf) <- c('Run','RMSE')
+
+
+rmses_lr.plot <- ggplot(rmses_lr, aes(x=rmses_lr$Run,
+                                   y=rmses_lr$RMSE), group=1) + 
+  geom_point(col="#2b3647") + 
+  labs(x="Runs", y="RMSE",title="RMSE for Linear Regression") + 
+  theme(axis.text.x=element_blank(),
+        axis.ticks.x=element_blank(),
+        panel.background = element_rect(fill = "white", color = "black"),
+        legend.position = "none",
+        plot.title = element_text(face = "bold", hjust = 0.5)) +
+  geom_line() +
+  geom_hline(yintercept = mean(rmses_lr$RMSE), col="#ef0410", linetype="dashed")
+
+rmses_rf.plot <- ggplot(rmses_rf, aes(x=rmses_rf$Run,
+                                   y=rmses_rf$RMSE, group=1)) + 
+  geom_point(col="#2b3647") + 
+  labs(x="Runs", y="RMSE",title="RMSE for Random Forest with 50 trees") + 
+  theme(axis.text.x=element_blank(),
+        axis.ticks.x=element_blank(),
+        panel.background = element_rect(fill = "white", color = "black"),
+        legend.position = "none",
+        plot.title = element_text(face = "bold", hjust = 0.5)) +
+  geom_line() +
+  geom_hline(yintercept = mean(rmses_rf$RMSE), col="#ef0410", linetype="dashed")
+
+grid.arrange(rmses_lr.plot,rmses_rf.plot,nrow=1,ncol=2,widths=c(1,1))
+```
+
+
+Looking at the correlation values, and graphs of how the number of downloads changes with the different features available, we assumed that linear regression model should be a better fit for the data. This assumption is verified by the `RMSEs` that we have generated for a linear regression model and a random forest model. 
+
+###<span style = "color:#5cc5ce">Conclusion</span>
+
+We compared the performances of the two models with the same set of features for predicting the downloads based on the input we receive. The average RMSE of the RandomForest model for 50 iterations is `~8.2` times more than the corresponding average RMSE of the LinearRegression model. 
+
+We also observed that even though `mean_price` has the highest correlation with the downloads, using it alone does not lead to better results. The dataset is in such a manner that even the feature with the smallest correlation values contributes significantly to the performance of the model. The correlation between some features like year, key, mode with respect to the downloads is not a very high value, this may mean that the relationship between them is not exactly linear but since they contribute significantly to the accuracy of the model, it may be so that there exists some other non-linear relationship.
+
+There are some issues in the data processing step that can be handled in a better way. For instance, to handle the missing values for the count of play and jam for a given song, we just replaced the missing values with `0`. We had an idea of trying to find the k-similar songs (for some k) for a given song, and then replace the missing values as the mean of the counts of plays and jams respectively.
+
+We also thought about using `genre` as a feature, but since we could only find the correlation values for two numeric variables, we weren't successful in using `genre`. This is one feature which may help us better analyze the number of downloads for different types of songs.
+
+There is also the case of handling song titles and artist names which have not been seen before in the given training data. For now, we just chose to give the number of downloads for such inputs as 0, but this is something that must be taken care of.
+
+
+
+
+
